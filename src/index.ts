@@ -23,9 +23,10 @@ async function handleGrafanaWebhook(req: Request, forwardingUrl: string) {
       const text = `${summary}\n${description}`.trim();
 
       const titleUrl = url ? `[${titleText}](${url})` : titleText;
-      const silenceUrl = alert.silenceURL ? ` [(silence)](${alert.silenceURL})` : "";
+      const silenceUrl = alert.silenceURL ? ` · [(silence)](${alert.silenceURL})` : "";
+      const instance = labels.instance ? ` · ${labels.instance}` : "";
 
-      const title = `${status} ${titleUrl}${silenceUrl}${labels.instance ? ` · ${labels.instance}` : ""}`;
+      const title = `${status} ${titleUrl}${silenceUrl}${instance}`;
 
       return `### ${title}\n${text}`;
     })

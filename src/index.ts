@@ -1,20 +1,5 @@
 import { Env, GrafanaWebhook } from "./types";
 
-function findSecret(token: string | undefined | null, env: Env): string | null {
-  if (!token) return null;
-
-  // Iterate through all the keys in the environment until a match for the token is found, then return the URL.
-  for (let i = 0; i < Object.keys(env).length; i++) {
-    const key: keyof Env = `TOKEN_${i + 1}`;
-    if (env[key]) {
-      const [envToken, url] = env[key].split(",");
-      if (envToken === token) return url;
-    }
-  }
-
-  return null;
-}
-
 async function handleGrafanaWebhook(req: Request, forwardingUrl: string) {
   const body = await req.json();
   const { status, alerts } = body as GrafanaWebhook;
@@ -25,21 +10,38 @@ async function handleGrafanaWebhook(req: Request, forwardingUrl: string) {
 
   const alertsText = alerts
     .map((alert) => {
-      const status = alert.status === "firing" ? "🔥" : "✅";
-      const title = alert?.labels?.alertname ?? "No title";
+      const status = alert.status === "firing" ? "🔴" : "🟢";
+      const titleText = (alert?.labels?.alertname ?? "No title");
       const url = alert.generatorURL;
 
       const annotations = alert.annotations;
-      const text = annotations.description || annotations.summary || "No description provided";
+      const labels = alert.labels;
 
-      const titleUrl = url ? `[${title}](${url})` : title;
+      const summary = annotations.summary || "No summary provided";
+      const description = annotations.description || "";
+
+      const text = `${summary}\n${description}`.trim();
+
+      const titleUrl = url ? `[${titleText}](${url})` : titleText;
       const silenceUrl = alert.silenceURL ? ` [(silence)](${alert.silenceURL})` : "";
 
-      return `${status} **${titleUrl}**${silenceUrl}\n${text}`;
+      const title = `${status} ${titleUrl}${silenceUrl}${labels.instance ? ` · ${labels.instance}` : ""}`;
+
+      return `### ${title}\n${text}`;
     })
     .join("\n\n");
 
-  const overallStatus = status === "firing" ? "🔥 **FIRING**" : "✅ **RESOLVED**";
+  const statusCount = alerts.reduce((acc, alert) => {
+    acc[alert.status] = (acc[alert.status] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const overallStatuses = [];
+
+  if (statusCount.resolved > 0) overallStatuses.push(`✅ ${statusCount.resolved} resolved`);
+  if (statusCount.firing > 0) overallStatuses.push(`🔥 ${statusCount.firing} firing`);
+
+  const overallStatus = `## New Alerts! ${overallStatuses.join(", ")}`;
   let message = `${overallStatus}\n\n${alertsText}`;
   if (message.length > 2044) {
     message = message.substring(0, 2044) + "…";
@@ -62,21 +64,22 @@ async function handleGrafanaWebhook(req: Request, forwardingUrl: string) {
 
 export default {
   async fetch(req: Request, env: Env) {
+    const authToken = req.headers.get("Authorization");
+    if (authToken !== `Bearer ${env.TOKEN}`) return new Response("Not found", { status: 404 });
+
+    if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
     const url = new URL(req.url);
     const { pathname } = url;
 
-    if (pathname === "/webhook") {
-      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+    const pathParts = pathname.split("/").filter(Boolean);
+    if (pathParts.length !== 3) return new Response("Not found", { status: 404 });
 
-      // Get the token from the `Authentication: Bearer <token>` header
-      const authHeader = req.headers.get("Authorization");
-      const token = authHeader?.split("Bearer ")[1];
-      const forwardingUrl = findSecret(token, env);
-      if (!forwardingUrl) return new Response("Unauthorized", { status: 401 });
+    const [action, webhookId, webhookToken] = pathParts;
+    if (action !== "webhooks") return new Response("Not found", { status: 404 });
 
-      return handleGrafanaWebhook(req, forwardingUrl);
-    } else {
-      return new Response("Not found", { status: 404 });
-    }
+    const forwardingUrl = `https://discord.com/api/webhooks/${webhookId}/${webhookToken}`;
+
+    return handleGrafanaWebhook(req, forwardingUrl);
   },
 }
